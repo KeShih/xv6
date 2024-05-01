@@ -128,6 +128,14 @@ found:
     return 0;
   }
 
+  // Allocate a usyscall page
+  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  p->usyscall->pid = p->pid;
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -165,6 +173,10 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  if(p->usyscall)
+    kfree((void*)p->usyscall);
+  p->usyscall = 0;
 }
 
 // Create a user page table for a given process,
@@ -197,11 +209,8 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
-  struct usyscall *u = (struct usyscall *)USYSCALL;
-  u->pid = p->pid;
-
   if(mappages(pagetable, USYSCALL, PGSIZE,
-              (uint64)u, PTE_R) < 0){
+              (uint64)(p->usyscall), PTE_R | PTE_U) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmunmap(pagetable, TRAPFRAME, 1, 0);
     uvmfree(pagetable, 0);
@@ -607,6 +616,20 @@ kill(int pid)
     release(&p->lock);
   }
   return -1;
+}
+
+int pgaccess(uint64 va, int page_number, uint64 ua) {
+    struct proc *p = myproc();
+    pagetable_t pagetable = p->pagetable;
+    int ret = 0;
+    for(int i=0; i<page_number; i++) {
+      pte_t* pte = walk(pagetable, va + i*PGSIZE, 0);
+      if(*pte & PTE_A) {
+        ret |= 1 << i;
+      }
+      *pte &= ~PTE_A;
+    }
+    return copyout(pagetable, ua, (char *)&ret, sizeof(int));
 }
 
 // Copy to either a user address, or kernel address,
